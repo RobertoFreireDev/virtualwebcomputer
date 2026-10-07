@@ -1,0 +1,123 @@
+# Virtual PC — unit tests
+
+Unit tests for every feature, button and piece of HTML logic in
+[`../virtualwebpc.html`](../virtualwebpc.html). The app is a single file with an
+inline classic `<script>`, so nothing is imported from it: each test boots the
+real HTML in a fresh [JSDOM](https://github.com/jsdom/jsdom) window and drives it
+the way a user (or the browser) would.
+
+## Running
+
+```bash
+cd test
+npm install
+npm test            # run once
+npm run test:watch  # re-run on change
+```
+
+Requires Node 18+ (developed on Node 24). No browser is needed.
+
+## Layout
+
+| Path | What it covers |
+|---|---|
+| `helpers/app.js` | `loadApp()` boots the HTML in JSDOM, stubs the browser APIs JSDOM lacks and exposes the script's internals (`app.get("db")`, `app.call("setMode", "edit")`, `app.flush()` …). Also `tick()` (await microtasks) and `sampleTree()` (a small fixture library). |
+| `helpers/dom.js` | Event helpers: `click`, `key`, `input`, `change`, `paste`, `drag`, `caret`, `chooseFile` … |
+| `unit/html-structure.test.js` | Static markup contract — every id, title, toolbar `data-cmd`, hidden file input, default visibility. |
+| `unit/storage.test.js` | First-run seed, `load()`, debounced `save()`, blocked `localStorage` (memory-only mode), `flag()`, `toast()`, `uid()`. |
+| `unit/tree-model.test.js` | `find`, `each`, `contains`, `chainOf`, `target`, `addPage`, `addFolder`, `remove` (confirm dialog), `move` (incl. cycle guard), `duplicate`. |
+| `unit/tree-view.test.js` | `renderTree`/`build`, stats, search (`matches`), row click / twisty / double-click, click outside the rows (clears the highlight so new items go to the root), inline rename (`renameInTree`), drag & drop incl. root drop. |
+| `unit/folder-icons.test.js` | Custom folder icons: the 12 `FOLDER_ICONS` and their shared SVG style, `glyph()` fallbacks (missing/empty/unknown/non-string → default, pages never change), clicking a folder's icon (picker opens, folder not toggled), the picker grid (Default + 12, current marked), choosing saves to `node.icon` and storage, Default removes the field, Cancel/Escape, nested folders, context-menu entry, icons in the delete/export dialogs, old data and old backups unchanged, export → import round trip, `normalize()` filtering. |
+| `unit/context-menu.test.js` | Right-click menu items per node type, positioning/clamping, every action, closing on outside click / window blur / Escape. |
+| `unit/sanitize.test.js` | `clean()` tag & attribute whitelist, dropped vs. unwrapped elements, comments, Google Docs `<b>` wrapper, `href` scheme / `src` filtering, `<pre>` + `data-lang` normalisation, `esc()` / `attr()`. |
+| `unit/highlight.test.js` | `LANGS` table and `highlight()` for every language (C#, SQL, JS, JSON, HTML, CSS, Python, Shell). |
+| `unit/document.test.js` | `open` (incl. mid-edit page switch), `crumbs`, `render` (keyed on `openId`), `decorate` (copy button, escaped label), collapsible code blocks (start collapsed on every render, toggle, line count, never stored), `setMode` (view/edit/source), `format`/`unformat`, `commit`, Edit/Done/HTML buttons, title input & Enter/Tab, `tail`, `caretTo`, click-below-text, autosave debounce. |
+| `unit/editor.test.js` | Toolbar `execCommand` buttons, Code block / Table / Link buttons (with dialog), paste handling, `currentPre`/`insertText`, keyboard inside and outside code blocks. |
+| `unit/format-code.test.js` | `LANGS[lang].fmt()` pretty-printers: C-like brace re-breaking (JS/C#/CSS), JSON, SQL clauses/sub-queries, HTML tags, Python/Shell indentation, plain text; idempotence for every language. |
+| `unit/code-blocks.test.js` | Floating code-block headers: `makeHead`, `syncBlocks` positioning, language `<select>`, Format button (rewrite, `<br>` handling, error/already-formatted toasts), delete button, MutationObserver/rAF scheduling, resize. |
+| `unit/paste-menu.test.js` | The **Paste ▾** dropdown in the editing toolbar (next to Image, edit mode only) and its "From table" entry: a real Excel clipboard fixture (CRLF rows, tab cells, trailing CRLF) becomes a table with a header row, quoted cells with line breaks/tabs, ragged rows padded, caret kept while editing, empty/blocked clipboard toasts, source-view round trip. |
+| `unit/paste-markdown.test.js` | Paste ▾ → "From markdown" and `mdToHtml`: ATX/setext headings, paragraphs and hard breaks, rules, nested bullet/ordered lists, task boxes, fenced (language mapping, nested in lists, unclosed) and indented code, quotes + GitHub alerts, GFM pipe tables, MySQL `+---+`, psql `---+---` and box-drawing `┌─┬─┐` tables, inline bold/italic/strike/code/links/images/escapes, raw HTML shown as text, output stable through `clean()`. |
+| `unit/diagram.test.js` | The **Diagram** code block language, against fixtures F1–F14 (boxes and arrows, titled nested groups, ER cards, folder trees, sequence diagram, sloppy LLM output, decision diamond, ASCII table, outline, wide characters, prose, ER cards with crow's feet, nested frames): plumbing (`LANGS` entry, header select, `clean()`, CSS), `fmtDiagram`/Format button, `dgWidth`/`dgNormalize`/`dgGrid`, `dgKind`/`dgLooks`, `dgTree` + tree/outline rendering, table rendering, `dgScan`/`dgModel` (boxes, depths, titles, dividers, heads by direction, crow's feet, labels, snapping, styles), `dgSvg`, `decorate()` integration (`.dg`, `dg-on`, Text/Diagram toggle, kind hint, fallbacks, size guard), storage/export invariants, markdown-paste aliases and auto-detect. |
+| `unit/tables.test.js` | Table tools: `#tbl` bar markup, `currentCell`, `syncTable` positioning/visibility and its triggers, every row/column button (header rows are protected: adds go to the body, `− Row` removes the first body row), move row up/down and move column left/right (swap with the neighbour, toast at the edges, header never moves, ragged rows skipped), delete table (confirm), stale-bar guards, `Tab`/`Shift+Tab` between cells and `Tab` past the last cell. |
+| `unit/dialogs.test.js` | `openDialog`/`closeDialog`, `confirmBox`, `promptBox`, `linkBox`, `choiceBox`, `pickBox` (indeterminate folders, select all/none, disabled OK), Escape / veil-click priority. |
+| `unit/export-import.test.js` | `prune`, `normalize`, Export button (picker → JSON download → toast), Import flow (invalid JSON, empty, picker, Merge/Replace), round-trip. |
+| `unit/sidebar-shortcuts.test.js` | Resize grip (clamp 190–520, persist), `toggleNav`, Ctrl+S / Ctrl+E / Ctrl+\ / Escape (and Ctrl+F being left to the browser's find-in-page), `beforeunload`. |
+
+## How the harness works
+
+`loadApp(options)` returns an `app` object. Useful options:
+
+```js
+loadApp()                                        // first run → seeded library
+loadApp({ stored: { tree: sampleTree(), selected: "p1" } })   // preloaded localStorage
+loadApp({ storage: "blocked" })                  // localStorage throws → memory-only mode
+loadApp({ clipboardMode: "blocked" })            // navigator.clipboard rejects
+loadApp({ clipboardMode: "noread" })             // no navigator.clipboard.read (older browsers)
+```
+
+`app.clipboard.image = new app.window.File([...], "x.png", { type: "image/png" })`
+makes `navigator.clipboard.read()` serve that image (for the Image toolbar
+button); `paste(el, { files: [file] })` simulates Ctrl+V of a copied image.
+
+Inside `beforeParse` (before the page script runs) the harness:
+
+- routes `setTimeout`/`requestAnimationFrame` to Node's globals so Vitest fake
+  timers control them — call `app.flush()` to run the save debounce, toasts,
+  the 500 ms autosave and the rAF header sync;
+- defines `document.execCommand` (records every call in `app.exec.calls`;
+  `insertHTML` and `insertText` are actually applied at the selection so the
+  Code block / Table / Link buttons and plain-text pastes produce real DOM);
+- reflects `HTMLElement.contentEditable` to the attribute (JSDOM only knows the
+  attribute), which makes the inline-rename label focusable;
+- stubs `navigator.clipboard`, `Blob`, `URL.createObjectURL` and `<a>.click()` so
+  exports land in `app.downloads` as `{ download, text, blob }`.
+
+Script internals are reached through the window realm:
+`app.get("db")`, `app.get("mode")`, `app.set("raw", "<p>x</p>")`,
+`app.call("setMode", "edit")`. Every `function` and top-level `let/const` in the
+page script is reachable this way.
+
+Always `app.close()` in `afterEach` — it restores real timers and closes the window.
+
+## Documenting a known bug
+
+If a bug is found but not fixed yet, write the test that asserts the *correct*
+behaviour and mark it `it.fails`, so the suite stays green while the bug exists.
+When the bug is fixed the test starts failing (because it now passes) — flip it
+back to `it` at that point. Current `it.fails` tests: `sanitize.test.js` →
+"removes <svg> and <math> together with their content" (see Known bugs in
+`../CLAUDE.md`).
+
+Regressions that the suite now guards against (each has a dedicated test):
+
+- `open()` while editing flushes the editor into the page it belongs to before
+  loading the new one (`document.test.js`).
+- `commit()`, the title input and `Ctrl+E` act on the *open* page (`openId`),
+  not on the highlighted row (`db.selected`), which may be a folder or a
+  right-clicked page (`document.test.js`, `sidebar-shortcuts.test.js`,
+  `context-menu.test.js`).
+- `beforeunload` writes to `localStorage` synchronously via `flush()`
+  (`sidebar-shortcuts.test.js`).
+- A round trip through the HTML view (`format()` → `unformat()`) is lossless
+  (`document.test.js`).
+- Dialog prefills go through `attr()`, which also escapes `"`
+  (`dialogs.test.js`).
+- `clean()` drops `<script>`/`<style>`-like elements, unwraps other unknown
+  elements, strips comments and Google Docs' `font-weight:normal` `<b>` wrapper,
+  and only keeps `http(s):`/`mailto:`/scheme-less hrefs (`sanitize.test.js`).
+
+## JSDOM limitations to keep in mind
+
+- `execCommand` is stubbed: formatting commands (bold, lists…) are only
+  *recorded*, not applied. Tests assert the command/value that was issued.
+- Layout is not computed; `getBoundingClientRect` returns zeros unless a test
+  overrides it with `rect(el, {...})`.
+- `Selection.toString()` works, so "wrap the selection in a code block" and the
+  link-name prefill are tested for real.
+- JSDOM does not fire `selectionchange`; table tests place the caret with
+  `caret()` and call `app.call("syncBlocks")` (which runs `syncTable()`) to do
+  what the browser would do on its own.
+- `expect(nodeA).toBe(nodeB)` on two *different* JSDOM nodes crashes vitest's
+  diff printer with `Cannot read properties of undefined (reading 'name')`
+  instead of a readable failure. When comparing nodes that may differ, use
+  `expect(a === b).toBe(true)`.
