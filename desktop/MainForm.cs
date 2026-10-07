@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Reflection;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 
@@ -16,43 +18,51 @@ sealed class MainForm : Form
     /* .example is reserved (RFC 2606): the name can never belong to a real site.
        Every request to it is answered from memory, so the origin — and with it
        the localStorage key space — stays stable across versions. */
-    const string Origin = "https://virtualpc.example/";
+    const string Host = "virtualpc.example";
+    const string Origin = "https://" + Host + "/";
 
     /* Chromium switches that keep the whole app (host + WebView2 processes) under
        100 MB: the GPU work runs inside the browser process instead of a process of
        its own, a single renderer, V8 tuned for size (≈90 MB less on very large
-       pages), and none of the background services a single local page doesn't need. */
+       pages), and none of the background services a single local page doesn't need.
+       AutoupgradeMixedContent off: http:// images in pages load as they did in the
+       browser version instead of being rewritten to https:// (and breaking). */
     const string BrowserArgs =
         "--in-process-gpu --renderer-process-limit=1 --js-flags=--optimize-for-size --disable-background-networking " +
         "--disable-component-update --disable-extensions --disable-sync --no-pings " +
-        "--disable-features=msSmartScreenProtection,SpareRendererForSitePerProcess,Translate,msEdgeTranslate,AutofillServerCommunication";
-
-    /* Defence in depth for content pasted into pages: only the app's own inline
-       script and styles run, nothing is fetched or framed, images may be embedded
-       (data:) or linked over http(s) as before. */
-    const string Headers =
-        "Content-Type: text/html; charset=utf-8\r\n" +
-        "Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; " +
-        "img-src data: blob: https: http:; font-src data:; connect-src 'none'; media-src 'none'; object-src 'none'; " +
-        "frame-src 'none'; worker-src 'none'; form-action 'none'; base-uri 'none'\r\n" +
-        "X-Content-Type-Options: nosniff\r\n" +
-        "Cache-Control: no-store";
+        "--disable-features=msSmartScreenProtection,SpareRendererForSitePerProcess,Translate,msEdgeTranslate,AutofillServerCommunication," +
+        "AutoupgradeMixedContent";
 
     /* Context-menu entries that would navigate, save the page, or are browser
-       chrome; the editing ones (cut/copy/paste, spelling, emoji…) stay. */
+       chrome; the editing ones (cut/copy/paste, spelling, emoji…) stay, and so does
+       "Save image as" (see SaveDownload). */
     static readonly HashSet<string> HiddenMenuItems = new(StringComparer.OrdinalIgnoreCase) {
         "back", "forward", "reload", "saveAs", "print", "createQrCode", "share", "webCapture",
-        "inspectElement", "viewPageSource", "saveLinkAs", "saveImageAs", "saveMediaAs",
+        "inspectElement", "viewPageSource", "saveLinkAs", "saveMediaAs",
         "copyLinkToHighlight", "openLinkInNewWindow", "readAloud", "translate", "addToCollections"
     };
 
     static readonly byte[] Page = ReadPage();
 
+    /* Defence in depth for content pasted into pages: only the app's own script runs
+       (pinned by hash, so no injected <script>, on…= handler or javascript: URL can —
+       with 'unsafe-inline' they could, and send the library out as an image URL),
+       nothing is fetched or framed, images may be embedded (data:) or linked over
+       http(s) as before, and image requests carry no Referer. */
+    static readonly string Headers =
+        "Content-Type: text/html; charset=utf-8\r\n" +
+        "Content-Security-Policy: default-src 'none'; script-src " + ScriptHash(Page) + "; style-src 'unsafe-inline'; " +
+        "img-src data: blob: https: http:; font-src data:; connect-src 'none'; media-src 'none'; object-src 'none'; " +
+        "frame-src 'none'; worker-src 'none'; form-action 'none'; base-uri 'none'\r\n" +
+        "Referrer-Policy: no-referrer\r\n" +
+        "X-Content-Type-Options: nosniff\r\n" +
+        "Cache-Control: no-store";
+
     readonly WebView2 web = new() {
         Dock = DockStyle.Fill,
         DefaultBackgroundColor = Color.FromArgb(0x0f, 0x13, 0x17)   // --ink, so there is no white flash
     };
-    bool closing, closed;
+    bool closing, closed, asking;
 
     public MainForm()
     {
@@ -76,9 +86,25 @@ sealed class MainForm : Form
         return m.ToArray();
     }
 
+    /* CSP source for the page's one inline script. The HTML parser turns CRLF/CR into
+       LF before the browser hashes it, so the same is done here (the repo may check the
+       file out with CRLF). test/unit/host.test.js pins the single-script shape. */
+    static string ScriptHash(byte[] page)
+    {
+        var html = Encoding.UTF8.GetString(page);
+        var start = html.IndexOf("<script", StringComparison.OrdinalIgnoreCase);
+        if (start < 0 || string.CompareOrdinal(html, start, "<script>", 0, 8) != 0)
+            throw new InvalidOperationException("virtualwebpc.html must start its only script with a plain <script>");
+        var end = html.IndexOf("</script", start, StringComparison.OrdinalIgnoreCase);
+        if (end < 0 || html.IndexOf("<script", end, StringComparison.OrdinalIgnoreCase) >= 0)
+            throw new InvalidOperationException("virtualwebpc.html must contain exactly one inline <script>");
+        var code = html[(start + 8)..end].Replace("\r\n", "\n").Replace('\r', '\n');
+        return "'sha256-" + Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(code))) + "'";
+    }
+
     async Task StartAsync()
     {
-        var dataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "VirtualPC");
+        var dataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), Program.Name);
         CoreWebView2Environment env;
         try
         {
@@ -107,7 +133,7 @@ sealed class MainForm : Form
         s.AreDevToolsEnabled = false;
 #endif
         s.AreHostObjectsAllowed = false;
-        s.IsStatusBarEnabled = false;
+        s.IsStatusBarEnabled = true;          // a link's address on hover, as in the browser, before it opens outside
         s.IsPasswordAutosaveEnabled = false;
         s.IsGeneralAutofillEnabled = false;
         s.IsSwipeNavigationEnabled = false;
@@ -126,12 +152,12 @@ sealed class MainForm : Form
             e.State = e.PermissionKind == CoreWebView2PermissionKind.ClipboardRead
                 ? CoreWebView2PermissionState.Allow   // Image / Paste ▾ buttons
                 : CoreWebView2PermissionState.Deny;
-        core.DownloadStarting += SaveExport;
+        core.DownloadStarting += SaveDownload;
         core.ContextMenuRequested += (_, e) => TrimMenu(e.MenuItems);
         core.ProcessFailed += (_, e) => {
-            if (e.ProcessFailedKind is CoreWebView2ProcessFailedKind.RenderProcessExited
-                or CoreWebView2ProcessFailedKind.RenderProcessUnresponsive)
-                core.Reload();
+            if (closing) return;
+            if (e.ProcessFailedKind == CoreWebView2ProcessFailedKind.RenderProcessExited) core.Reload();
+            else if (e.ProcessFailedKind == CoreWebView2ProcessFailedKind.RenderProcessUnresponsive) AskReload();
         };
         core.DocumentTitleChanged += (_, _) => Text = core.DocumentTitle is { Length: > 0 } t ? t : "Virtual PC";
 
@@ -147,21 +173,32 @@ sealed class MainForm : Form
             : env.CreateWebResourceResponse(null, 404, "Not Found", "Cache-Control: no-store");
     }
 
-    /* Links in pages open in the user's default browser — only web and mail links. */
+    /* Links in pages open in the user's default browser — only web and mail links.
+       A relative link resolves against the app's own address, which means nothing
+       outside the app, so it is ignored as it was in the browser (a missing file). */
     static void OpenOutside(string uri)
     {
         if (!Uri.TryCreate(uri, UriKind.Absolute, out var u)) return;
         if (u.Scheme != Uri.UriSchemeHttp && u.Scheme != Uri.UriSchemeHttps && u.Scheme != Uri.UriSchemeMailto) return;
+        if (u.Host.Equals(Host, StringComparison.OrdinalIgnoreCase)) return;
         try { Process.Start(new ProcessStartInfo(u.AbsoluteUri) { UseShellExecute = true }); }
         catch { /* no handler registered */ }
     }
 
     /* Export builds a blob and clicks a download link: ask where to save it with
-       the Windows dialog instead of the browser's download bubble. Anything that
-       isn't the app's own blob (e.g. "Save link as" on an http link) is refused. */
-    void SaveExport(object? sender, CoreWebView2DownloadStartingEventArgs e)
+       the Windows dialog instead of the browser's download bubble. "Save image as"
+       keeps WebView2's own handling, as in the browser: its Save dialog has already
+       been answered when this runs. It is the only other way a download can start
+       (links never get that far, "Save link/media as" are hidden), so anything that
+       isn't an image — say a linked "image" that turns out to be a program — is refused. */
+    void SaveDownload(object? sender, CoreWebView2DownloadStartingEventArgs e)
     {
-        if (!e.DownloadOperation.Uri.StartsWith("blob:" + Origin, StringComparison.Ordinal))
+        var op = e.DownloadOperation;
+        var uri = op.Uri;
+        if (uri.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase)) return;   // pasted into a page
+        if ((uri.StartsWith("https:", StringComparison.OrdinalIgnoreCase) || uri.StartsWith("http:", StringComparison.OrdinalIgnoreCase))
+            && op.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase)) return;   // linked from the web
+        if (!uri.StartsWith("blob:" + Origin, StringComparison.Ordinal))
         {
             e.Cancel = true;
             return;
@@ -173,7 +210,10 @@ sealed class MainForm : Form
                 using var dialog = new SaveFileDialog {
                     Title = "Export",
                     FileName = Path.GetFileName(e.ResultFilePath),
-                    InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+                    /* WebView2's download folder (Downloads), where the browser version saved
+                       backups; Documents is often synced to OneDrive, and a backup is the
+                       whole library in plain text */
+                    InitialDirectory = Path.GetDirectoryName(e.ResultFilePath),
                     Filter = "Virtual PC backup (*.json)|*.json|All files (*.*)|*.*",
                     DefaultExt = "json",
                     AddExtension = true,
@@ -198,6 +238,22 @@ sealed class MainForm : Form
             if (items[i].Kind == CoreWebView2ContextMenuItemKind.Separator
                 && (i == 0 || i == items.Count - 1 || items[i - 1].Kind == CoreWebView2ContextMenuItemKind.Separator))
                 items.RemoveAt(i);
+    }
+
+    /* Like a browser's "Page unresponsive": a long task may still finish and save.
+       Reloading at once would drop the edit in progress, and a page that hangs while
+       loading would reload for ever. Shown outside the event, as WebView2 asks. */
+    void AskReload()
+    {
+        if (asking) return;
+        asking = true;
+        BeginInvoke(() => {
+            var reload = MessageBox.Show(this,
+                "Virtual PC is not responding.\n\nReload it now? Changes that are not saved yet will be lost.\nChoose No to keep waiting.",
+                "Virtual PC", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) == DialogResult.Yes;
+            asking = false;
+            if (reload && !closing && web.CoreWebView2 is { } core) core.Reload();
+        });
     }
 
     /* minimised: let WebView2 drop caches and page out what it can */

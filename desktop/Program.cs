@@ -2,20 +2,27 @@ namespace VirtualPC;
 
 static class Program
 {
-    const string InstanceName = @"Local\VirtualPC.SingleInstance";
-    const string ActivateName = @"Local\VirtualPC.Activate";
+    /* Names the data folder (%LOCALAPPDATA%\<Name>) and the single-instance objects.
+       A Debug build has DevTools on and honours WEBVIEW2_* (e.g. a remote debugging
+       port any browser can attach to), so it never opens the real library. */
+#if DEBUG
+    internal const string Name = "VirtualPC.Debug";
+#else
+    internal const string Name = "VirtualPC";
+#endif
+    const string InstanceName = @"Local\" + Name + ".SingleInstance";
+    const string ActivateName = @"Local\" + Name + ".Activate";
 
     [STAThread]
     static void Main()
     {
 #if !DEBUG
-        // These variables let anything that can set the environment redirect the
-        // browser engine, the data folder or attach a debugger. Release builds ignore them.
-        foreach (var name in new[] {
-            "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "WEBVIEW2_BROWSER_EXECUTABLE_FOLDER",
-            "WEBVIEW2_USER_DATA_FOLDER", "WEBVIEW2_RELEASE_CHANNEL_PREFERENCE",
-            "WEBVIEW2_PIPE_FOR_SCRIPT_DEBUGGER", "WEBVIEW2_CHANNEL_SEARCH_KIND" })
-            Environment.SetEnvironmentVariable(name, null);
+        // WEBVIEW2_* variables let anything that can set the environment redirect the
+        // browser engine or the data folder, add switches (a debugging port) or attach a
+        // script debugger. Release builds ignore every one of them, not just the known ones.
+        foreach (string name in Environment.GetEnvironmentVariables().Keys)
+            if (name.StartsWith("WEBVIEW2_", StringComparison.OrdinalIgnoreCase))
+                Environment.SetEnvironmentVariable(name, null);
 #endif
         // One window per user: two would share the same storage and overwrite each other.
         using var instance = new Mutex(true, InstanceName, out var first);
@@ -28,8 +35,12 @@ static class Program
 
         ApplicationConfiguration.Initialize();
         var form = new MainForm();
-        ThreadPool.RegisterWaitForSingleObject(activate,
-            (_, _) => form.BeginInvoke(new Action(form.Reveal)), null, Timeout.Infinite, false);
+        ThreadPool.RegisterWaitForSingleObject(activate, (_, _) => {
+            // a launch before the window exists, or while it is closing, would otherwise
+            // throw on this pool thread and take the running app down with it
+            try { form.BeginInvoke(new Action(form.Reveal)); }
+            catch (InvalidOperationException) { }
+        }, null, Timeout.Infinite, false);
         Application.Run(form);
     }
 }

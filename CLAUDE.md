@@ -14,7 +14,7 @@ to start in an ordinary browser.
 virtualwebpc.html   the whole application (CSS + markup + JS, ~2660 lines)
 desktop/            Windows host (.NET 10 WinForms + WebView2), embeds the HTML
   VirtualPC.csproj  framework-dependent single-file exe, HTML as EmbeddedResource
-  Program.cs        single instance, clears WEBVIEW2_* env vars in Release
+  Program.cs        single instance, clears every WEBVIEW2_* env var in Release, Debug/Release names
   MainForm.cs       WebView2 setup: private origin, CSP, navigation/download/menu rules, memory switches
   app.ico           window/taskbar icon
 README.md           how to build and run
@@ -34,7 +34,8 @@ test/               Vitest + JSDOM unit tests (see test/README.md)
   editing it. Opening `virtualwebpc.html` in a browser only shows a "runs only
   inside the desktop app" notice. Data is stored under the `localStorage` key
   `virtualpc.data.v1` of the origin `https://virtualpc.example/`, in the profile
-  `%LOCALAPPDATA%\VirtualPC`. Libraries from the old browser version move over
+  `%LOCALAPPDATA%\VirtualPC` (Debug builds: `%LOCALAPPDATA%\VirtualPC.Debug`, so
+  a DevTools-enabled build never opens the real library). Libraries from the old browser version move over
   with Export (in the browser, from commit `f6609f7` or earlier) → Import (in the app).
 - **Tests:** `cd test && npm install && npm test` (Node 18+; no browser needed).
   Run a single file with `npx vitest run unit/editor.test.js`.
@@ -46,7 +47,7 @@ state and functions are top-level bindings, in this order:
 
 | Section | Key names | Notes |
 |---|---|---|
-| host | `window.chrome.webview` check at the top of the script | First thing the script does: without the WebView2 bridge (any ordinary browser) it replaces the body with `#blocked` (`.blocked`) and throws, so nothing reads, writes or seeds storage. The test harness stubs `window.chrome.webview` (`loadApp({host:false})` omits it). Host side (`desktop/MainForm.cs`): the page is served from memory for `https://virtualpc.example/` (`.example` is reserved; stable origin = stable localStorage) with a CSP (`default-src 'none'`, inline script/style only, `img-src data: blob: http(s):`, no connect/frames/forms); any other navigation is cancelled and http/https/mailto links open in the default browser; frames and new windows are blocked; only clipboard-read permission is granted; downloads other than the app's own `blob:` are refused and Export's blob goes through a Windows Save dialog; DevTools off and `WEBVIEW2_*` env vars cleared in Release; navigation/save/print/inspect context-menu entries removed; closing the window runs `commit()`+`flush()` before WebView2 shuts down; single instance (second launch focuses the first). Memory: `--in-process-gpu --renderer-process-limit=1 --js-flags=--optimize-for-size` + background services off, `MemoryUsageTargetLevel.Low` while minimised — ≈73 MB total private memory idle, ≈82 MB on a typical page. |
+| host | `window.chrome.webview` check at the top of the script | First thing the script does: without the WebView2 bridge (any ordinary browser) it replaces the body with `#blocked` (`.blocked`) and throws, so nothing reads, writes or seeds storage. The test harness stubs `window.chrome.webview` (`loadApp({host:false})` omits it). Host side (`desktop/MainForm.cs`): the page is served from memory for `https://virtualpc.example/` (`.example` is reserved; stable origin = stable localStorage) with a CSP (`default-src 'none'`; `script-src 'sha256-…'` = the hash of the page's one inline `<script>`, computed at startup by `ScriptHash()` with CRLF→LF as the HTML parser does, so injected `<script>`, `on…=` handlers and `javascript:` URLs never run; `style-src 'unsafe-inline'`; `img-src data: blob: http(s):`; no connect/frames/forms) plus `Referrer-Policy: no-referrer`; the `AutoupgradeMixedContent` feature is off so `http://` images load as they did in the browser; any other navigation is cancelled and http/https/mailto links open in the default browser (relative links, which resolve to the app's own host, are ignored); frames and new windows are blocked; only clipboard-read permission is granted; downloads: Export's `blob:` goes through a Windows Save dialog that starts in Downloads (Documents is often OneDrive-synced), "Save image as" keeps WebView2's own Save dialog for `data:image/…` and http(s) `image/*`, anything else is refused; the status bar shows a link's address on hover; a hung page asks Wait/Reload instead of reloading by itself, a crashed one reloads; Release ignores every `WEBVIEW2_*` env var and has DevTools off; Debug (DevTools on, env vars honoured) uses its own profile `%LOCALAPPDATA%\VirtualPC.Debug` and single-instance names, never the real library; navigation/save-page/print/inspect context-menu entries removed; closing the window runs `commit()`+`flush()` before WebView2 shuts down; single instance (second launch focuses the first). Memory: `--in-process-gpu --renderer-process-limit=1 --js-flags=--optimize-for-size` + background services off, `MemoryUsageTargetLevel.Low` while minimised — ≈73 MB total private memory idle, ≈82 MB on a typical page. |
 | state | `KEY`, `uid()`, `db`, `mode`, `raw`, `memoryOnly` | `db = { tree, selected, navWidth, navOpen }`. `db.selected` is only the *highlighted row* (can be a folder); the page shown in the panel is `openId` (document section). `mode` is `"view" \| "edit" \| "source"`. `raw` is the current page's HTML — the single source of truth while editing. |
 | storage | `load()`, `save()`, `flush()`, `flag()`, `toast()` | `save()` is debounced 250 ms; `flush()` writes immediately (used by `beforeunload`, where a timer could never fire). A throwing `localStorage` sets `memoryOnly` and the app keeps working in memory. |
 | tree model | `find`, `each`, `contains`, `chainOf`, `target`, `addPage`, `addFolder`, `remove`, `move` | Nodes: `{id, type:"page", name, content}` or `{id, type:"folder", name, open, children, icon?}`. `icon` is optional: absent (new folders, old data) = the default folder glyph. `target()` decides where new nodes go (inside a selected folder, beside a selected page). `move()` refuses cycles. |
@@ -105,6 +106,12 @@ state and functions are top-level bindings, in this order:
   Task Manager "Memory") under 100 MB on typical pages. Match the
   existing compact style (short helper names, `$()` for `getElementById`,
   section banners `/* ═══ name ═══ */`).
+- The exe pins the hash of the one inline `<script>` in its CSP. Keep exactly
+  one attribute-less `<script>`; wire events with `addEventListener`/`.onx =`,
+  never `on…="…"` attributes (in the markup or in generated HTML), `javascript:`
+  URLs, `eval`/`new Function` or a second script — JSDOM ignores CSP, so these
+  would pass the tests and break only in the app. `host.test.js` pins the first
+  two; check anything else by running the app.
 - New HTML that ends up in page content must pass through `clean()`; new
   attributes need adding to `OK_ATTR`. Anything interpolated into `innerHTML`
   goes through `esc()` (text) or `attr()` (attribute values) — including values
