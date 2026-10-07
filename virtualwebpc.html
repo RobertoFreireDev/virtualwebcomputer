@@ -401,6 +401,9 @@ details:not([open])>summary .dg-dir::before{opacity:.6}
 }
 #toast.show{opacity:1;transform:translate(-50%,0)}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+.blocked{position:fixed;inset:0;display:grid;place-content:center;gap:8px;padding:24px;text-align:center;color:var(--text);background:var(--ink)}
+.blocked b{font-size:18px;color:#f0f4f8}
+.blocked p{margin:0;color:var(--muted)}
 </style>
 </head>
 <body>
@@ -519,6 +522,16 @@ details:not([open])>summary .dg-dir::before{opacity:.6}
 
 <script>
 "use strict";
+/* ═══════════════════════════ host ═══════════════════════════ */
+/* Runs only inside the Virtual PC desktop app (desktop/, WebView2), which
+   exposes window.chrome.webview. Opened in an ordinary browser the page stops
+   here, before anything reads or writes storage. */
+if(!(window.chrome && window.chrome.webview)){
+  document.body.innerHTML = '<div id="blocked" class="blocked"><b>Virtual PC</b>'
+    + '<p>This file only runs inside the Virtual PC desktop app. Open VirtualPC.exe instead.</p></div>';
+  throw new Error("Virtual PC runs only inside its desktop app");
+}
+
 /* ═══════════════════════════ state ═══════════════════════════ */
 const KEY = "virtualpc.data.v1";
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-3);
@@ -2679,7 +2692,7 @@ const SEED = [{
     id:uid(), type:"page", name:"How this wiki works",
     content:
 `<h2>How this wiki works</h2>
-<p>Everything lives in your browser. The sidebar holds folders and pages; this panel holds the page you have open. Press <code>Ctrl+E</code> to edit, <code>Ctrl+S</code> to save and close editing.</p>
+<p>Everything lives on this computer, inside the Virtual PC app. The sidebar holds folders and pages; this panel holds the page you have open. Press <code>Ctrl+E</code> to edit, <code>Ctrl+S</code> to save and close editing.</p>
 <h3>Organising</h3>
 <ul>
 <li>Drag any row onto a folder to move it inside, or between rows to reorder.</li>
@@ -2719,7 +2732,7 @@ ORDER BY best DESC;
 <h3>Good to know</h3>
 <ol>
 <li>Data is saved automatically as you type.</li>
-<li>Clearing browser storage clears the wiki &#8212; export now and then.</li>
+<li>Deleting the app's data folder clears the wiki &#8212; export now and then.</li>
 <li>The <strong>HTML</strong> button shows the raw markup of the page you are on.</li>
 </ol>`
   }]

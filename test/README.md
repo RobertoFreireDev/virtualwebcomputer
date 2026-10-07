@@ -24,6 +24,7 @@ Requires Node 18+ (developed on Node 24). No browser is needed.
 | `helpers/app.js` | `loadApp()` boots the HTML in JSDOM, stubs the browser APIs JSDOM lacks and exposes the script's internals (`app.get("db")`, `app.call("setMode", "edit")`, `app.flush()` …). Also `tick()` (await microtasks) and `sampleTree()` (a small fixture library). |
 | `helpers/dom.js` | Event helpers: `click`, `key`, `input`, `change`, `paste`, `drag`, `caret`, `chooseFile` … |
 | `unit/html-structure.test.js` | Static markup contract — every id, title, toolbar `data-cmd`, hidden file input, default visibility. |
+| `unit/host.test.js` | Desktop-only start: boots when `window.chrome.webview` (the WebView2 host) exists; opened in a plain browser it shows `#blocked`, never reads, writes or seeds storage. First-run page copy describes the desktop app. |
 | `unit/storage.test.js` | First-run seed, `load()`, debounced `save()`, blocked `localStorage` (memory-only mode), `flag()`, `toast()`, `uid()`. |
 | `unit/tree-model.test.js` | `find`, `each`, `contains`, `chainOf`, `target`, `addPage`, `addFolder`, `remove` (confirm dialog), `move` (incl. cycle guard), `duplicate`. |
 | `unit/tree-view.test.js` | `renderTree`/`build`, stats, search (`matches`), row click / twisty / double-click, click outside the rows (clears the highlight so new items go to the root), inline rename (`renameInTree`), drag & drop incl. root drop. |
@@ -53,6 +54,7 @@ loadApp({ stored: { tree: sampleTree(), selected: "p1" } })   // preloaded local
 loadApp({ storage: "blocked" })                  // localStorage throws → memory-only mode
 loadApp({ clipboardMode: "blocked" })            // navigator.clipboard rejects
 loadApp({ clipboardMode: "noread" })             // no navigator.clipboard.read (older browsers)
+loadApp({ host: false })                         // no window.chrome.webview → opened in a plain browser
 ```
 
 `app.clipboard.image = new app.window.File([...], "x.png", { type: "image/png" })`

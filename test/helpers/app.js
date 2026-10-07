@@ -10,6 +10,7 @@
  *   - navigator.clipboard         → in-memory, can be switched to "blocked"
  *   - Blob / URL.createObjectURL / <a>.click → captured as `downloads`
  *   - timers / rAF                → routed to Node globals so vi fake timers work
+ *   - window.chrome.webview       → the WebView2 host bridge (omit with `host: false`)
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -23,7 +24,7 @@ export const html = fs.readFileSync(HTML_PATH, "utf8");
 
 const BLOCK = /^(P|DIV|PRE|TABLE|UL|OL|BLOCKQUOTE|HR|H[1-6])$/;
 
-export function loadApp({ stored, storage = "ok", clipboardMode = "ok" } = {}) {
+export function loadApp({ stored, storage = "ok", clipboardMode = "ok", host = true } = {}) {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
 
   const virtualConsole = new VirtualConsole();
@@ -50,6 +51,17 @@ export function loadApp({ stored, storage = "ok", clipboardMode = "ok" } = {}) {
       window.clearInterval = id => globalThis.clearInterval(id);
       window.requestAnimationFrame = cb => globalThis.setTimeout(() => cb(16), 16);
       window.cancelAnimationFrame = id => globalThis.clearTimeout(id);
+
+      /* the WebView2 desktop host (desktop/) exposes window.chrome.webview;
+         `host: false` simulates opening the file in a plain browser */
+      const hostMessages = [];
+      if (host) {
+        window.chrome = { webview: {
+          postMessage: m => hostMessages.push(m),
+          addEventListener() {}, removeEventListener() {}
+        } };
+      }
+      window.__hostMessages = hostMessages;
 
       /* storage */
       if (storage === "blocked") {

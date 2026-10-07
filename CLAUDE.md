@@ -1,15 +1,23 @@
 # Virtual PC (Virtual-Web-Computer)
 
-A personal wiki / notebook that runs entirely in the browser from **one HTML
-file** — no build step, no server, no dependencies. Folders and pages live in a
-sidebar tree, the open page is a rich-text document with syntax-highlighted code
-blocks, and everything is persisted to `localStorage`. Backups are plain JSON.
+A personal wiki / notebook for Windows. The whole app is **one HTML file**
+(no build step, no server, no web dependencies) hosted by a small WebView2
+desktop program (`desktop/`) that embeds the file in its exe. Folders and pages
+live in a sidebar tree, the open page is a rich-text document with
+syntax-highlighted code blocks, and everything is persisted to `localStorage`
+in the app's private WebView2 profile. Backups are plain JSON. The HTML refuses
+to start in an ordinary browser.
 
 ## Repository layout
 
 ```
-virtualwebpc.html   the whole application (CSS + markup + JS, ~2650 lines)
-README.md           project title only
+virtualwebpc.html   the whole application (CSS + markup + JS, ~2660 lines)
+desktop/            Windows host (.NET 10 WinForms + WebView2), embeds the HTML
+  VirtualPC.csproj  framework-dependent single-file exe, HTML as EmbeddedResource
+  Program.cs        single instance, clears WEBVIEW2_* env vars in Release
+  MainForm.cs       WebView2 setup: private origin, CSP, navigation/download/menu rules, memory switches
+  app.ico           window/taskbar icon
+README.md           how to build and run
 CLAUDE.md           this file
 test/               Vitest + JSDOM unit tests (see test/README.md)
   helpers/app.js    boots the HTML in JSDOM, stubs browser APIs, exposes internals
@@ -19,9 +27,15 @@ test/               Vitest + JSDOM unit tests (see test/README.md)
 
 ## Running
 
-- **App:** open `virtualwebpc.html` in any modern browser. Data is stored under
-  the `localStorage` key `virtualpc.data.v1`. Because storage is per-origin,
-  opening the file from a different path/URL shows a different library.
+- **App:** `cd desktop && dotnet run` (dev, Debug) or
+  `dotnet publish -c Release -o publish` → `desktop/publish/VirtualPC.exe`
+  (~1.4 MB; needs the .NET 10 Desktop Runtime and the WebView2 Runtime, both
+  standard on Windows 11). The HTML is compiled into the exe — rebuild after
+  editing it. Opening `virtualwebpc.html` in a browser only shows a "runs only
+  inside the desktop app" notice. Data is stored under the `localStorage` key
+  `virtualpc.data.v1` of the origin `https://virtualpc.example/`, in the profile
+  `%LOCALAPPDATA%\VirtualPC`. Libraries from the old browser version move over
+  with Export (in the browser, from commit `f6609f7` or earlier) → Import (in the app).
 - **Tests:** `cd test && npm install && npm test` (Node 18+; no browser needed).
   Run a single file with `npx vitest run unit/editor.test.js`.
 
@@ -32,6 +46,7 @@ state and functions are top-level bindings, in this order:
 
 | Section | Key names | Notes |
 |---|---|---|
+| host | `window.chrome.webview` check at the top of the script | First thing the script does: without the WebView2 bridge (any ordinary browser) it replaces the body with `#blocked` (`.blocked`) and throws, so nothing reads, writes or seeds storage. The test harness stubs `window.chrome.webview` (`loadApp({host:false})` omits it). Host side (`desktop/MainForm.cs`): the page is served from memory for `https://virtualpc.example/` (`.example` is reserved; stable origin = stable localStorage) with a CSP (`default-src 'none'`, inline script/style only, `img-src data: blob: http(s):`, no connect/frames/forms); any other navigation is cancelled and http/https/mailto links open in the default browser; frames and new windows are blocked; only clipboard-read permission is granted; downloads other than the app's own `blob:` are refused and Export's blob goes through a Windows Save dialog; DevTools off and `WEBVIEW2_*` env vars cleared in Release; navigation/save/print/inspect context-menu entries removed; closing the window runs `commit()`+`flush()` before WebView2 shuts down; single instance (second launch focuses the first). Memory: `--in-process-gpu --renderer-process-limit=1 --js-flags=--optimize-for-size` + background services off, `MemoryUsageTargetLevel.Low` while minimised — ≈73 MB total private memory idle, ≈82 MB on a typical page. |
 | state | `KEY`, `uid()`, `db`, `mode`, `raw`, `memoryOnly` | `db = { tree, selected, navWidth, navOpen }`. `db.selected` is only the *highlighted row* (can be a folder); the page shown in the panel is `openId` (document section). `mode` is `"view" \| "edit" \| "source"`. `raw` is the current page's HTML — the single source of truth while editing. |
 | storage | `load()`, `save()`, `flush()`, `flag()`, `toast()` | `save()` is debounced 250 ms; `flush()` writes immediately (used by `beforeunload`, where a timer could never fire). A throwing `localStorage` sets `memoryOnly` and the app keeps working in memory. |
 | tree model | `find`, `each`, `contains`, `chainOf`, `target`, `addPage`, `addFolder`, `remove`, `move` | Nodes: `{id, type:"page", name, content}` or `{id, type:"folder", name, open, children, icon?}`. `icon` is optional: absent (new folders, old data) = the default folder glyph. `target()` decides where new nodes go (inside a selected folder, beside a selected page). `move()` refuses cycles. |
@@ -84,7 +99,10 @@ state and functions are top-level bindings, in this order:
 
 ## Conventions
 
-- Keep everything in the single HTML file; there is no bundler. Match the
+- Keep the app in the single HTML file; there is no bundler. `desktop/` is only
+  the host — app features go in the HTML, not in C#. The host is not unit-tested;
+  check it by running the app. Keep total memory (host + WebView2 processes,
+  Task Manager "Memory") under 100 MB on typical pages. Match the
   existing compact style (short helper names, `$()` for `getElementById`,
   section banners `/* ═══ name ═══ */`).
 - New HTML that ends up in page content must pass through `clean()`; new
