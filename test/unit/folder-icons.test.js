@@ -7,7 +7,9 @@ const db = () => app.get("db");
 const dlg = () => app.$("dialog");
 const gl = id => app.row(id).querySelector(".gl");
 const ICONS = () => app.get("FOLDER_ICONS");
-const KEYS = ["pc", "trash", "book", "star", "clock", "config", "home", "music", "image", "code", "mail", "archive"];
+const KEYS = ["pc", "trash", "book", "star", "clock", "config", "home", "music", "image", "code", "mail", "archive",
+  "people", "search", "save", "upload", "download", "browser", "security", "cloud",
+  "database", "chart", "calendar", "video", "map", "work", "idea"];
 /* the markup as the browser serialises it (`<path/>` → `<path></path>`) */
 const norm = s => { const d = app.document.createElement("div"); d.innerHTML = s; return d.innerHTML; };
 const pick = k => click(dlg().querySelector(`.icon-grid [data-icon="${k}"]`));
@@ -17,8 +19,17 @@ afterEach(() => app.close());
 describe("FOLDER_ICONS", () => {
   beforeEach(() => { app = loadApp({ stored: { tree: sampleTree() } }); });
 
-  it("offers 12 folder icons", () => {
+  it("offers 27 folder icons", () => {
     expect(Object.keys(ICONS())).toEqual(KEYS);
+    expect(KEYS).toHaveLength(27);
+  });
+
+  it("gives every icon its own label and drawing", () => {
+    const defs = app.get("FOLDER_ICON_DEFS");
+    const labels = KEYS.map(k => defs[k].label), svgs = KEYS.map(k => defs[k].svg);
+    labels.forEach((l, i) => expect(l.trim(), KEYS[i]).not.toBe(""));
+    expect(new Set(labels).size).toBe(KEYS.length);
+    expect(new Set(svgs).size).toBe(KEYS.length);
   });
 
   it("draws every icon in the same style as the folder and page glyphs", () => {
@@ -103,7 +114,7 @@ describe("icon picker", () => {
     expect(app.get("openId")).toBe("p3");
   });
 
-  it("lists Default plus the 12 icons, marking the current one", () => {
+  it("lists Default plus the 27 icons, marking the current one", () => {
     click(gl("f1"));
     const btns = [...dlg().querySelectorAll(".icon-grid [data-icon]")];
     expect(btns.map(b => b.dataset.icon)).toEqual(["", ...KEYS]);
