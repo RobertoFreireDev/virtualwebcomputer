@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { loadApp, sampleTree, tick } from "../helpers/app.js";
-import { click, change, rect } from "../helpers/dom.js";
+import { click, change, rect, mousedown, caret, input } from "../helpers/dom.js";
 
 /* The floating language/delete header that sits over every <pre> while editing */
 let app, editor, layer;
@@ -28,6 +28,7 @@ describe("makeHead()", () => {
     const h = app.call("makeHead");
     expect(() => change(h.querySelector("select"))).not.toThrow();
     expect(() => click(h.querySelector(".fmt"))).not.toThrow();
+    expect(() => click(h.querySelector(".tog"))).not.toThrow();
     await h.querySelector(".x").onclick();
     expect(app.dialogOpen()).toBe(false);
   });
@@ -179,6 +180,164 @@ describe("language select", () => {
     app.call("setMode", "view");
     expect(app.q("#viewer .code-bar span").textContent).toBe("Plain text");
     expect(app.q("#viewer pre.code .t-keyword")).toBeNull();
+  });
+});
+
+/* While editing, a collapsed block is marked data-collapsed on its <pre>: view state only,
+   like the viewer's .code-wrap.collapsed — it never reaches raw, the page, storage or the HTML view. */
+describe("collapse toggle (edit mode)", () => {
+  const pre = () => editor.querySelector("pre.code");
+  const tog = (i = 0) => heads()[i].querySelector(".tog");
+  const shut = p => p.hasAttribute("data-collapsed");
+  const selectionchange = () => app.document.dispatchEvent(new app.window.Event("selectionchange"));
+  const saved = sampleTree()[1].content + "<p><br></p>";        // p3 as stored after a round of editing
+
+  it("every header starts with a collapse toggle", () => {
+    app.call("setMode", "edit");
+    expect(heads()[0].firstElementChild).toBe(tog());
+    expect(tog().tagName).toBe("BUTTON");
+    expect(tog().querySelector("svg")).not.toBeNull();
+  });
+
+  it("a block collapsed in view mode is still collapsed when editing starts", () => {
+    expect(app.q("#viewer .code-wrap").classList.contains("collapsed")).toBe(true);
+    app.call("setMode", "edit");
+    expect(shut(pre())).toBe(true);
+    expect(heads()[0].classList.contains("collapsed")).toBe(true);
+    expect(tog().getAttribute("aria-expanded")).toBe("false");
+    expect(tog().title).toBe("Expand");
+  });
+
+  it("a block expanded in view mode is still expanded", () => {
+    click(app.q("#viewer .code-wrap .tog"));
+    app.call("setMode", "edit");
+    expect(shut(pre())).toBe(false);
+    expect(heads()[0].classList.contains("collapsed")).toBe(false);
+    expect(tog().getAttribute("aria-expanded")).toBe("true");
+    expect(tog().title).toBe("Collapse");
+  });
+
+  it("each block keeps its own state", () => {
+    app.set("raw", '<pre class="code" data-lang="plain">a</pre><p>x</p><pre class="code" data-lang="sql">b</pre><p>y</p><pre class="code" data-lang="css">c</pre>');
+    app.call("render");
+    click(app.qa("#viewer .code-wrap .tog")[1]);
+    app.call("setMode", "edit");
+    expect([...editor.querySelectorAll("pre.code")].map(shut)).toEqual([true, false, true]);
+    expect(heads().map(h => h.querySelector(".tog").getAttribute("aria-expanded"))).toEqual(["false", "true", "false"]);
+  });
+
+  it("matches blocks by position even when one <pre> has no header (not a .code block yet)", () => {
+    app.set("raw", '<pre>bare</pre><pre class="code" data-lang="plain">x</pre>');
+    app.call("render");                              // the viewer shows both as code blocks
+    click(app.qa("#viewer .code-wrap .tog")[0]);     // first open, second collapsed
+    app.call("setMode", "edit");
+    expect(heads()).toHaveLength(1);
+    expect(shut(pre())).toBe(true);                  // the second block's state, not the first's
+    expect(shut(editor.querySelector("pre:not(.code)"))).toBe(false);
+  });
+
+  it("the toggle expands and collapses the block", () => {
+    app.call("setMode", "edit");
+    click(tog());
+    expect(shut(pre())).toBe(false);
+    expect(heads()[0].classList.contains("collapsed")).toBe(false);
+    expect(tog().getAttribute("aria-expanded")).toBe("true");
+    expect(tog().title).toBe("Collapse");
+    click(tog());
+    expect(shut(pre())).toBe(true);
+    expect(heads()[0].classList.contains("collapsed")).toBe(true);
+    expect(tog().getAttribute("aria-expanded")).toBe("false");
+    expect(tog().title).toBe("Expand");
+  });
+
+  it("blocks added while editing start expanded and can be collapsed", () => {
+    app.call("setMode", "edit");
+    click(app.$("tbBlock"));
+    app.call("syncBlocks");
+    const pres = [...editor.querySelectorAll("pre.code")];
+    expect(pres).toHaveLength(2);
+    expect(shut(pres[1])).toBe(false);
+    expect(tog(1).getAttribute("aria-expanded")).toBe("true");
+    click(tog(1));
+    expect(shut(pres[1])).toBe(true);
+    expect(shut(pres[0])).toBe(true);                // the other block is untouched
+  });
+
+  it("shows the line count only while collapsed", () => {
+    app.set("raw", '<pre class="code" data-lang="plain">a\nb\nc\n</pre>');
+    app.call("render");
+    app.call("setMode", "edit");
+    expect(heads()[0].querySelector(".n").textContent).toBe("3 lines");
+    click(tog());
+    expect(heads()[0].querySelector(".n").textContent).toBe("");
+    pre().innerHTML = "one<br>two";                   // pasted code may use <br>
+    click(tog());
+    expect(heads()[0].querySelector(".n").textContent).toBe("2 lines");
+  });
+
+  it("does not steal focus from the editor on mousedown", () => {
+    app.call("setMode", "edit");
+    expect(mousedown(tog()).defaultPrevented).toBe(true);
+  });
+
+  it("collapsing the block that holds the caret moves the caret below it", () => {
+    click(app.q("#viewer .code-wrap .tog"));
+    app.call("setMode", "edit");
+    caret(pre().firstChild, 3);
+    click(tog());
+    expect(shut(pre())).toBe(true);
+    const s = app.window.getSelection(), below = pre().nextElementSibling;
+    expect(pre().contains(s.anchorNode)).toBe(false);
+    expect(below.contains(s.anchorNode)).toBe(true);
+    selectionchange();
+    expect(shut(pre())).toBe(true);                  // and it stays collapsed
+  });
+
+  it("moving the caret into a collapsed block expands it", () => {
+    app.call("setMode", "edit");
+    expect(shut(pre())).toBe(true);
+    caret(pre().firstChild, 2);
+    selectionchange();
+    expect(shut(pre())).toBe(false);
+    app.flush();                                     // header re-synced
+    expect(tog().getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("a caret anywhere else leaves collapsed blocks alone", () => {
+    app.call("setMode", "edit");
+    caret(editor.querySelector("h2").firstChild, 1);
+    selectionchange();
+    expect(shut(pre())).toBe(true);
+  });
+
+  it("is never saved: autosave and Done store the page without it", () => {
+    app.call("setMode", "edit");
+    expect(shut(pre())).toBe(true);
+    input(editor);
+    app.flush();                                     // 500 ms autosave + save debounce
+    expect(app.get("raw")).toBe(saved);
+    expect(app.call("find", "p3").node.content).toBe(saved);
+    expect(app.stored().tree[1].content).toBe(saved);
+    click(app.$("btnMode"));                         // Done
+    expect(app.call("find", "p3").node.content).toBe(saved);
+  });
+
+  it("is never saved: not by switching pages mid-edit, nor shown in the HTML view", () => {
+    app.call("setMode", "edit");
+    expect(shut(pre())).toBe(true);
+    app.call("setMode", "source");
+    expect(app.$("source").value).not.toContain("data-collapsed");
+    app.call("setMode", "edit");                     // from the HTML view nothing is collapsed
+    click(tog());
+    expect(shut(pre())).toBe(true);
+    click(app.row("p1"));                            // open another page while editing
+    expect(app.call("find", "p3").node.content).toBe(saved);
+  });
+
+  it("CSS: a collapsed block shows only its header strip", () => {
+    const css = [...app.document.querySelectorAll("style")].map(s => s.textContent).join("\n");
+    expect(css).toMatch(/\.body\[contenteditable="true"\] pre\.code\[data-collapsed\]\{[^}]*overflow:hidden/);
+    expect(css).toContain(".blk.collapsed .tog svg{transform:none}");   // chevron points down, as in view mode
   });
 });
 

@@ -250,7 +250,9 @@ describe("setMode()", () => {
     const last = app.$("editor").lastElementChild;
     expect(last.tagName).toBe("P");
     expect(last.innerHTML).toBe("<br>");
-    expect(app.get("raw")).toBe(app.$("editor").innerHTML);
+    // the block came from view mode collapsed: raw is the editor's html without that view-only marker
+    expect(app.get("raw")).toBe(app.call("editorHtml"));
+    expect(app.get("raw")).toBe(app.call("find", "p3").node.content + "<p><br></p>");
   });
 
   it("source shows the textarea with formatted html and hides the page", () => {
@@ -298,6 +300,95 @@ describe("setMode()", () => {
     expect(app.$("blocks").children.length).toBe(1);
     app.call("setMode", "view");
     expect(app.$("blocks").children.length).toBe(0);
+  });
+});
+
+/* JSDOM has no layout, so `layout()` fakes one: #scroll is a box at y=100 and every top-level
+   block of the visible viewer/editor is stacked under the page's 34px top padding with the
+   height `tall()` gives it (a hidden body has no boxes, as with display:none). The editor's
+   focus() does what Chromium does to a contenteditable: without preventScroll it jumps to the
+   top of the page — the bug this pins. */
+describe("entering edit mode keeps the scroll position", () => {
+  const tall = el =>
+    el.classList.contains("code-wrap") ? (el.classList.contains("collapsed") ? 40 : 340) :
+    el.tagName === "PRE" ? (el.hasAttribute("data-collapsed") ? 40 : 340) :
+    el.tagName === "TABLE" ? (el.parentNode.id === "editor" ? 146 : 100) :   // edit mode adds margin-top:46px
+    50;
+  function layout(){
+    const sc = app.$("scroll"), viewer = app.$("viewer"), editor = app.$("editor");
+    let y = 0;
+    Object.defineProperty(sc, "scrollTop", { configurable: true, get: () => y, set: v => { y = Math.max(0, v); } });
+    sc.getBoundingClientRect = () => ({ top: 100, bottom: 700, height: 600, left: 0, right: 800, width: 800 });
+    const base = app.window.Element.prototype.getBoundingClientRect;
+    app.window.HTMLElement.prototype.getBoundingClientRect = function(){
+      const body = this.parentNode;
+      if((body !== viewer && body !== editor) || body.style.display === "none") return base.call(this);
+      let top = 100 + 34 - y;
+      for(const k of body.children){ if(k === this) break; top += tall(k); }
+      return { top, bottom: top + tall(this), height: tall(this), left: 0, right: 800, width: 800 };
+    };
+    const focus = editor.focus.bind(editor);
+    editor.focus = opts => { focus(opts); if(!(opts && opts.preventScroll)) y = 0; };
+    return sc;
+  }
+  const page = html => { app.set("raw", html); app.call("render"); };
+  const paras = (n, from = 0) => Array.from({ length: n }, (_, i) => `<p>p${from + i}</p>`).join("");
+  /* screen offset (from the top of #scroll) of each top-level block i..j-1 */
+  const at = (id, i, j) => [...app.$(id).children].slice(i, j).map(k => k.getBoundingClientRect().top - 100);
+
+  it("the Edit button leaves the page where it was (the editor is focused without scrolling)", () => {
+    page(paras(40));
+    const sc = layout();
+    sc.scrollTop = 900;                               // p17 is cut by the top edge, p18… below it
+    const before = at("viewer", 15, 30);
+    click(app.$("btnMode"));
+    expect(app.get("mode")).toBe("edit");
+    expect(sc.scrollTop).toBe(900);
+    expect(at("editor", 15, 30)).toEqual(before);
+  });
+
+  it("Ctrl+E keeps it too", () => {
+    page(paras(40));
+    const sc = layout();
+    sc.scrollTop = 1234;
+    key(app.document.body, "e", { ctrlKey: true });
+    expect(app.get("mode")).toBe("edit");
+    expect(sc.scrollTop).toBe(1234);
+  });
+
+  it("code blocks keep their collapsed/expanded state, so nothing on screen moves", () => {
+    page(paras(10) + '<pre class="code" data-lang="plain">a\nb</pre>' + paras(10, 10) +
+         '<pre class="code" data-lang="sql">select 1</pre>' + paras(20, 20));
+    click(app.qa("#viewer .code-wrap .tog")[1]);     // the second block is open, the first stays collapsed
+    const sc = layout();
+    sc.scrollTop = 700;
+    const before = at("viewer", 10, 30);
+    click(app.$("btnMode"));
+    expect(sc.scrollTop).toBe(700);
+    expect(at("editor", 10, 30)).toEqual(before);
+    const pres = app.qa("#editor pre.code");
+    expect(pres.map(p => p.hasAttribute("data-collapsed"))).toEqual([true, false]);
+  });
+
+  it("when a block above grows in the editor, the scroll follows so the text on screen stays put", () => {
+    page("<table><tbody><tr><td>a</td></tr></tbody></table>" + paras(40));
+    const sc = layout();
+    sc.scrollTop = 1000;
+    const before = at("viewer", 15, 30);
+    click(app.$("btnMode"));
+    expect(sc.scrollTop).toBe(1046);                  // the table's edit-mode margin, nothing more
+    expect(at("editor", 15, 30)).toEqual(before);
+  });
+
+  it("a block cut by the top edge stays cut at the same height", () => {
+    page(paras(5) + '<pre class="code" data-lang="plain">long</pre>' + paras(30, 5));
+    click(app.q("#viewer .code-wrap .tog"));          // open: 340px tall in both modes
+    const sc = layout();
+    sc.scrollTop = 400;                               // 150px of the block are above the screen
+    const [y] = at("viewer", 5, 6);
+    expect(y).toBe(-116);
+    click(app.$("btnMode"));
+    expect(at("editor", 5, 6)).toEqual([-116]);
   });
 });
 

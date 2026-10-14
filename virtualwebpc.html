@@ -239,11 +239,11 @@ body.nav-closed aside,body.nav-closed .grip{display:none}
 .code-bar button{color:var(--faint);padding:2px 6px;border-radius:4px}
 .code-bar button:hover{color:var(--text);background:var(--raise)}
 .code-bar .tog{display:grid;place-items:center;width:20px;height:20px;padding:0}
-.code-bar .tog svg{transform:rotate(180deg);transition:transform .12s ease}
+.code-bar .tog svg,.blk .tog svg{transform:rotate(180deg);transition:transform .12s ease}
 .code-bar .n{flex:1;opacity:.75}
 /* collapsed (the default on every render): only the bar shows, the chevron points down */
 .code-wrap.collapsed .code-bar{padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:#0b0e12}
-.code-wrap.collapsed .tog svg{transform:none}
+.code-wrap.collapsed .tog svg,.blk.collapsed .tog svg{transform:none}
 .code-wrap.collapsed pre.code{display:none}
 /* diagram blocks: alignment matters, so no wrapping; in view mode the drawing (.dg) replaces the text */
 .body pre.code[data-lang="diagram"]{white-space:pre;overflow-x:auto}
@@ -291,7 +291,10 @@ details:not([open])>summary .dg-dir::before{opacity:.6}
 .body[contenteditable="true"] pre.code{
   border-color:#2f3a46;border-left:2px solid var(--accent);
   padding-top:40px;                    /* reserved strip for the header */
+  margin:1.79em 0;                     /* = view mode's .code-wrap gap (1.4em of the 16.5px text), so Edit moves nothing */
 }
+/* collapsed while editing: the block shrinks to the strip its header covers */
+.body[contenteditable="true"] pre.code[data-collapsed]{height:33px;padding-top:31px;padding-bottom:0;overflow:hidden}
 #blocks{position:absolute;inset:0;pointer-events:none;z-index:3}
 .blk{
   position:absolute;height:31px;display:flex;align-items:center;gap:6px;
@@ -304,6 +307,10 @@ details:not([open])>summary .dg-dir::before{opacity:.6}
   font:11.5px var(--sans);cursor:pointer;
 }
 .blk select:hover{color:var(--text);border-color:#31404d}
+.blk.collapsed{border-bottom-color:transparent;border-radius:7px}
+.blk .tog{width:23px;height:23px;display:grid;place-items:center;border-radius:4px;color:var(--faint)}
+.blk .tog:hover{background:var(--raise);color:var(--text)}
+.blk .n{color:var(--faint);font:11.5px var(--sans);opacity:.75;white-space:nowrap}
 .blk .grow{flex:1}
 .blk .fmt{
   height:23px;padding:0 8px;border-radius:4px;
@@ -1641,7 +1648,7 @@ function open(id){
     clearTimeout(typeTimer);
     const prev = openId && find(openId);
     if(prev && prev.node.type === "page"){
-      prev.node.content = mode === "edit" ? editor.innerHTML : unformat(source.value);
+      prev.node.content = mode === "edit" ? editorHtml() : unformat(source.value);
       save();
     }
     mode = "view";                            // so setMode() doesn't copy the old page into raw
@@ -1673,6 +1680,7 @@ function render(){
    count and Copy. Blocks start collapsed on every render; the state lives only in the
    viewer DOM (never in `raw`), so nothing about it is stored or exported. */
 const CHEV = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3.5 6 8 10.5 12.5 6"/></svg>';
+const lines = code => { const n = code.replace(/\n$/, "").split("\n").length; return n + " line" + (n !== 1 ? "s" : ""); };
 function decorate(root){
   root.querySelectorAll("pre.code").forEach(pre => {
     const lang = pre.dataset.lang || "plain";
@@ -1682,7 +1690,6 @@ function decorate(root){
     wrap.className = "code-wrap collapsed";
     const bar = document.createElement("div");
     bar.className = "code-bar";
-    const n = code.replace(/\n$/, "").split("\n").length;
     /* a diagram is drawn next to its text; one bad block falls back to text and never stops the rest */
     let dg = null;
     if(lang === "diagram"){
@@ -1691,7 +1698,7 @@ function decorate(root){
     }
     bar.innerHTML = `<button class="tog" aria-expanded="false" title="Expand">${CHEV}</button>` +
                     `<span>${esc((LANGS[lang]||{}).label || lang)}${dg && dg.kind ? `<i class="dg-kind"> · ${esc(dg.kind)}</i>` : ""}</span>` +
-                    `<span class="n">${n} line${n !== 1 ? "s" : ""}</span>`;
+                    `<span class="n">${lines(code)}</span>`;
     bar.querySelector(".tog").onclick = e => {
       const open = wrap.classList.toggle("collapsed") === false;
       e.currentTarget.setAttribute("aria-expanded", String(open));
@@ -1723,15 +1730,44 @@ function decorate(root){
     if(dg && dg.el) wrap.appendChild(dg.el);
   });
 }
+/* the editor's html as stored: a block collapsed while editing carries data-collapsed on
+   its <pre>, which is view state (like .code-wrap.collapsed) and never reaches raw */
+function editorHtml(){
+  if(!editor.querySelector("[data-collapsed]")) return editor.innerHTML;
+  const c = editor.cloneNode(true);
+  c.querySelectorAll("[data-collapsed]").forEach(el => el.removeAttribute("data-collapsed"));
+  return c.innerHTML;
+}
 function commit(){
   const f = openPage(); if(!f) return;
-  if(mode === "edit"){ tail(); raw = editor.innerHTML; }   // appending never moves the caret
+  if(mode === "edit"){ tail(); raw = editorHtml(); }   // appending never moves the caret
   if(mode === "source") raw = unformat(source.value);
   f.node.content = raw;
   save(); flag("Saved");
 }
+/* Edit keeps the page where the reader left it: every code block keeps its collapsed state
+   and the first block on screen stays at the same height, even if blocks above it change
+   size in the editor (a table gains room for its tool strip). Measured while the viewer shows. */
+function viewState(){
+  const top = $("scroll").getBoundingClientRect().top, kids = [...viewer.children];
+  const i = kids.findIndex(k => k.getBoundingClientRect().bottom > top);
+  return {
+    shut: [...viewer.querySelectorAll(".code-wrap")].map(w => w.classList.contains("collapsed")),
+    i, y: i < 0 ? 0 : kids[i].getBoundingClientRect().top - top
+  };
+}
+function keepView(v){
+  /* clean() turns every <pre> into a code block, so the viewer's blocks line up with the
+     editor's <pre>s; when they don't (content clean() drops), nothing is collapsed */
+  const pres = editor.querySelectorAll("pre");
+  if(pres.length === v.shut.length)
+    pres.forEach((p, k) => { if(v.shut[k] && p.classList.contains("code")) p.setAttribute("data-collapsed", ""); });
+  const sc = $("scroll"), el = v.i < 0 ? null : editor.children[v.i];
+  if(el) sc.scrollTop += el.getBoundingClientRect().top - sc.getBoundingClientRect().top - v.y;
+}
 function setMode(m){
-  if(mode === "edit" && m !== "edit") raw = editor.innerHTML;
+  const keep = mode === "view" && m === "edit" ? viewState() : null;
+  if(mode === "edit" && m !== "edit") raw = editorHtml();
   if(mode === "source" && m !== "source") raw = unformat(source.value);
   mode = m;
   viewer.style.display = m === "view" ? "" : "none";
@@ -1747,8 +1783,10 @@ function setMode(m){
     editor.innerHTML = raw && raw.trim() ? raw : "<p><br></p>";
     tail();                                   // always leave somewhere to type
     try{ document.execCommand("defaultParagraphSeparator", false, "p"); }catch(err){}
-    editor.focus(); caretTo(editor.lastElementChild || editor);
-    raw = editor.innerHTML;
+    /* a plain focus() puts the caret at the top of a contenteditable and scrolls there */
+    editor.focus({ preventScroll:true }); caretTo(editor.lastElementChild || editor);
+    raw = editorHtml();
+    if(keep) keepView(keep);
   }
   if(m === "source"){ source.value = format(raw); }
   if(m === "view") render();
@@ -1809,7 +1847,7 @@ titleEl.addEventListener("keydown", e => {
 let typeTimer = null;
 editor.addEventListener("input", () => {
   clearTimeout(typeTimer);
-  typeTimer = setTimeout(() => { raw = editor.innerHTML; commit(); }, 500);
+  typeTimer = setTimeout(() => { raw = editorHtml(); commit(); }, 500);
 });
 source.addEventListener("input", () => {
   clearTimeout(typeTimer);
@@ -1826,7 +1864,7 @@ editor.addEventListener("paste", e => {
   const text = e.clipboardData.getData("text/plain");
   if(inPre || !html) insertText(text);
   else document.execCommand("insertHTML", false, clean(html));
-  raw = editor.innerHTML; commit();           // insertText() changes the DOM without an input event
+  raw = editorHtml(); commit();           // insertText() changes the DOM without an input event
 });
 
 /* ═══════════════════════════ editor commands ═══════════════════════════ */
@@ -1835,7 +1873,7 @@ toolbar.querySelectorAll("button[data-cmd]").forEach(b => {
   b.onclick = () => {
     editor.focus();
     document.execCommand(b.dataset.cmd, false, b.dataset.val || null);
-    raw = editor.innerHTML; commit();
+    raw = editorHtml(); commit();
   };
 });
 function currentPre(){
@@ -1873,7 +1911,7 @@ $("tbBlock").onclick = () => {
       pre.before(p);
     }
   }
-  raw = editor.innerHTML; commit();
+  raw = editorHtml(); commit();
 };
 /* embed an image Blob/File as <img src="data:image/…"> at the caret; resolves once it is in the page */
 function insertImage(blob){
@@ -1882,7 +1920,7 @@ function insertImage(blob){
     fr.onload = () => {
       editor.focus();
       document.execCommand("insertHTML", false, `<img src="${attr(fr.result)}" alt="">`);
-      raw = editor.innerHTML; commit(); res(true);
+      raw = editorHtml(); commit(); res(true);
     };
     fr.onerror = () => { toast("Could not read the image"); res(false); };
     fr.readAsDataURL(blob);
@@ -1908,7 +1946,7 @@ $("tbLink").onclick = async () => {
   if(!res) return;
   editor.focus();
   document.execCommand("insertHTML", false, `<a href="${attr(res.url)}">${esc(res.name || res.url)}</a>`);
-  raw = editor.innerHTML; commit();
+  raw = editorHtml(); commit();
 };
 $("tbTable").onmousedown = e => e.preventDefault();
 $("tbTable").onclick = () => {
@@ -1917,7 +1955,7 @@ $("tbTable").onclick = () => {
   document.execCommand("insertHTML", false,
     `<table><thead><tr><th>Column</th><th>Column</th><th>Column</th></tr></thead><tbody>` +
     `<tr>${cell.repeat(3)}</tr><tr>${cell.repeat(3)}</tr></tbody></table><p><br></p>`);
-  raw = editor.innerHTML; commit();
+  raw = editorHtml(); commit();
 };
 
 /* ═══════════════════════════ paste from… ═══════════════════════════ */
@@ -2136,7 +2174,7 @@ async function pasteMd(keep){
       const p = document.createElement("p"); p.innerHTML = "<br>"; b.before(p);
     }
   });
-  raw = editor.innerHTML; commit(); syncBlocks();
+  raw = editorHtml(); commit(); syncBlocks();
 }
 async function pasteExcel(keep){
   const text = await clipText();
@@ -2145,7 +2183,7 @@ async function pasteExcel(keep){
   if(!rows.length){ toast("Nothing to paste on the clipboard"); return; }
   pasteAt(keep);
   document.execCommand("insertHTML", false, excelTable(rows));
-  raw = editor.innerHTML; commit(); syncBlocks();
+  raw = editorHtml(); commit(); syncBlocks();
 }
 $("tbPaste").onmousedown = e => { e.preventDefault(); e.currentTarget._open = menuEl.classList.contains("open") && menuEl._of === "paste"; };
 $("tbPaste").onclick = e => {
@@ -2169,17 +2207,17 @@ editor.addEventListener("keydown", e => {
       const nr = document.createRange();
       nr.setStartAfter(nl); nr.collapse(true);
       s.removeAllRanges(); s.addRange(nr);
-      raw = editor.innerHTML; commit();
+      raw = editorHtml(); commit();
       return;
     }
-    if(e.key === "Tab"){ e.preventDefault(); insertText("  "); raw = editor.innerHTML; commit(); return; }
+    if(e.key === "Tab"){ e.preventDefault(); insertText("  "); raw = editorHtml(); commit(); return; }
     if(e.key === "Enter" && (e.ctrlKey || e.shiftKey)){   // escape the block
       e.preventDefault();
       const p = document.createElement("p"); p.innerHTML = "<br>";
       pre.parentNode.insertBefore(p, pre.nextSibling);
       const r = document.createRange(); r.setStart(p, 0); r.collapse(true);
       const s = getSelection(); s.removeAllRanges(); s.addRange(r);
-      raw = editor.innerHTML; commit();
+      raw = editorHtml(); commit();
       return;
     }
   }
@@ -2189,7 +2227,7 @@ editor.addEventListener("keydown", e => {
     const cells = [...cell.closest("table").rows].flatMap(r => [...r.cells]);
     const i = cells.indexOf(cell);
     let to = cells[i + (e.shiftKey ? -1 : 1)];
-    if(!to && !e.shiftKey){ to = addRow(cell, true).parentNode.cells[0]; raw = editor.innerHTML; commit(); }
+    if(!to && !e.shiftKey){ to = addRow(cell, true).parentNode.cells[0]; raw = editorHtml(); commit(); }
     if(to) caretTo(to, false);
     scheduleSync();
     return;
@@ -2212,15 +2250,15 @@ editor.addEventListener("keydown", e => {
         s.removeAllRanges(); s.addRange(r);
       }
     }
-    raw = editor.innerHTML; commit();
+    raw = editorHtml(); commit();
   }
   if(e.key === "Backspace"){                   // Backspace at the very start of a quote unwraps it
     const q = quoteStart();
-    if(q){ e.preventDefault(); unquote(q); raw = editor.innerHTML; commit(); }
+    if(q){ e.preventDefault(); unquote(q); raw = editorHtml(); commit(); }
   }
   if(e.key === "Enter" && !e.ctrlKey && !e.shiftKey){   // Enter ends the quote (Shift+Enter breaks a line inside it)
     const q = currentQuote();
-    if(q){ e.preventDefault(); splitQuote(q); raw = editor.innerHTML; commit(); }
+    if(q){ e.preventDefault(); splitQuote(q); raw = editorHtml(); commit(); }
   }
 });
 function currentQuote(){
@@ -2282,13 +2320,20 @@ const TRASH = '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" strok
 function makeHead(){
   const h = document.createElement("div");
   h.className = "blk";
-  h.innerHTML = `<select title="Code language">${LANG_OPTS}</select><span class="grow"></span>` +
+  h.innerHTML = `<button class="tog" aria-expanded="true" title="Collapse">${CHEV}</button>` +
+                `<select title="Code language">${LANG_OPTS}</select><span class="n"></span><span class="grow"></span>` +
                 `<button class="fmt" title="Re-indent the code for its language">Format</button>` +
                 `<button class="x" title="Delete this code block">${TRASH}</button>`;
+  h.querySelector(".tog").onmousedown = e => e.preventDefault();   // keep the editor focused
+  h.querySelector(".tog").onclick = () => {
+    if(!h._pre) return;
+    fold(h._pre, !h._pre.hasAttribute("data-collapsed"));
+    syncBlocks();
+  };
   h.querySelector("select").onchange = e => {
     if(!h._pre) return;
     h._pre.dataset.lang = e.target.value;
-    raw = editor.innerHTML; commit();
+    raw = editorHtml(); commit();
   };
   h.querySelector(".fmt").onmousedown = e => e.preventDefault();   // keep the editor focused
   h.querySelector(".fmt").onclick = () => {
@@ -2300,7 +2345,7 @@ function makeHead(){
     catch(e){ toast("Can't format: " + e.message); return; }
     if(out === was){ toast("Already formatted"); return; }
     pre.textContent = out;
-    raw = editor.innerHTML; commit();
+    raw = editorHtml(); commit();
     editor.focus(); caretTo(pre);
   };
   h.querySelector(".x").onclick = async () => {
@@ -2308,9 +2353,26 @@ function makeHead(){
     const ok = await confirmBox("Delete code block?", "The code inside it will be removed from this page.", "Delete");
     if(!ok || !h._pre) return;
     h._pre.remove();
-    raw = editor.innerHTML; commit(); syncBlocks(); editor.focus();
+    raw = editorHtml(); commit(); syncBlocks(); editor.focus();
   };
   return h;
+}
+/* collapsing while editing marks the <pre> with data-collapsed (CSS shrinks it to its header
+   strip; editorHtml() keeps it out of raw). The caret never stays in hidden code: it moves
+   below the block, and moving it into a collapsed block opens the block (reveal) */
+function fold(pre, shut){
+  if(!shut){ pre.removeAttribute("data-collapsed"); return; }
+  pre.setAttribute("data-collapsed", "");
+  const s = getSelection();
+  if(!s.rangeCount || (!pre.contains(s.anchorNode) && !pre.contains(s.focusNode))) return;
+  let to = pre.nextElementSibling;
+  while(to && to.hasAttribute("data-collapsed")) to = to.nextElementSibling;
+  if(to) caretTo(to, false); else s.removeAllRanges();
+}
+function reveal(){
+  const n = getSelection().focusNode, el = n && (n.nodeType === 3 ? n.parentNode : n);
+  const pre = el && el.closest ? el.closest("pre[data-collapsed]") : null;
+  if(pre && editor.contains(pre)) pre.removeAttribute("data-collapsed");
 }
 let syncQueued = false;
 function scheduleSync(){
@@ -2333,6 +2395,11 @@ function syncBlocks(){
     h.style.width = (r.width - 3) + "px";
     const sel = h.querySelector("select");
     if(document.activeElement !== sel) sel.value = pre.dataset.lang;
+    const shut = pre.hasAttribute("data-collapsed"), tog = h.querySelector(".tog");
+    h.classList.toggle("collapsed", shut);
+    tog.setAttribute("aria-expanded", String(!shut));
+    tog.title = shut ? "Expand" : "Collapse";
+    h.querySelector(".n").textContent = shut ? lines(preText(pre)) : "";
   });
   syncTable();
 }
@@ -2441,7 +2508,7 @@ tbl.querySelectorAll("button").forEach(b => {
     }
     const focus = TABLE_OPS[b.dataset.t](cell);
     editor.focus(); caretTo(focus, false);
-    raw = editor.innerHTML; commit(); syncBlocks();
+    raw = editorHtml(); commit(); syncBlocks();
   };
 });
 function syncTable(){
@@ -2453,7 +2520,7 @@ function syncTable(){
   tbl.style.left = (r.left - base.left) + "px";
   tbl.style.top  = (r.top  - base.top - 36) + "px";
 }
-document.addEventListener("selectionchange", () => { if(mode === "edit") scheduleSync(); });
+document.addEventListener("selectionchange", () => { if(mode === "edit"){ reveal(); scheduleSync(); } });
 editor.addEventListener("click", scheduleSync);
 editor.addEventListener("keyup", scheduleSync);
 
