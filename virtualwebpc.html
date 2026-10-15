@@ -340,6 +340,21 @@ details:not([open])>summary .dg-dir::before{opacity:.6}
 .t-fn{color:var(--t-fn)}
 .t-tag{color:var(--t-tag)}
 .t-attr{color:var(--t-attr)}
+/* JSON blocks in view mode (jsonFold): a −/+ toggle on every non-empty object/array. When the
+   node starts its line the toggle hangs in the indentation (11 + 3 − 14 = no width), so no column
+   moves; elsewhere (.j-in, e.g. minified JSON) it takes its own room. "−", "+" and the
+   "… 3 items" summary are drawn here, so the <pre>'s text stays exactly the code. */
+.j-tog{
+  display:inline-block;width:11px;height:11px;margin:0 3px 0 -14px;padding:0;vertical-align:middle;
+  border:1px solid var(--line);border-radius:2px;color:var(--muted);font:10px/9px var(--mono);text-align:center;
+}
+.j-tog.j-in{margin-left:0}
+.j-tog::before{content:"\2212"}
+.j-shut>.j-tog::before{content:"+"}
+.j-more{margin:0 2px;padding:0 5px;border-radius:3px;background:var(--raise);color:var(--muted);font:11px/1.5 var(--sans)}
+.j-more::before{content:"\2026\a0" attr(data-n)}
+.j-tog:hover,.j-more:hover{color:var(--accent);border-color:var(--accent)}
+.j-shut>.j-body,.j-node:not(.j-shut)>.j-more{display:none}
 
 /* ─────────────────────────── overlays ─────────────────────────── */
 .menu{
@@ -949,6 +964,62 @@ function highlight(code, lang){
     for(const k in g) if(g[k] !== undefined) return `<span class="t-${k}">${g[k]}</span>`;
     return a[0];
   });
+}
+
+/* ═══════════════════════════ JSON folding ═══════════════════════════ */
+/* View mode only: every non-empty object/array of a JSON block becomes a .j-node with a −/+
+   toggle (before its key, if it has one) that hides what is between its brackets (.j-body) and
+   shows a "… N items" summary (.j-more) instead. Works on the text as written — formatted,
+   minified or not even valid: nothing is parsed or reformatted, brackets inside strings are
+   skipped and unmatched ones get no toggle. Toggle and summary carry no text (CSS draws them),
+   so pre.textContent stays the code. Like a collapsed block, the state lives only in the viewer. */
+function jsonFold(code){
+  const cuts = [], open = [];
+  let p1 = null, p2 = null;                                  // the last two tokens {t, at}, to find a node's key
+  const tok = (t, at) => { p2 = p1; p1 = { t, at }; };
+  for(let i = 0; i < code.length; i++){
+    const c = code[i], top = open[open.length - 1];
+    if(c === " " || c === "\n" || c === "\t" || c === "\r") continue;
+    if(c === '"'){
+      let j = i + 1;
+      while(j < code.length && code[j] !== '"'){ if(code[j] === "\\") j++; j++; }
+      if(top) top.any = true;
+      tok(c, i); i = j; continue;
+    }
+    if(c === "{" || c === "["){
+      if(top) top.any = true;
+      open.push({ c, o:i, a: p1 && p1.t === ":" && p2 && p2.t === '"' ? p2.at : i, n:1, any:false });
+      tok(c, i); continue;
+    }
+    if(c === "}" || c === "]"){
+      if(top && top.c === (c === "}" ? "{" : "[")){
+        open.pop();
+        if(top.any){
+          /* cuts at one position: closes before opens, the inner node's close first */
+          const lead = code.slice(code.lastIndexOf("\n", top.a - 1) + 1, top.a);
+          const n = top.n + (top.c === "{" ? " key" : " item") + (top.n === 1 ? "" : "s");
+          cuts.push([top.a, 3, `<span class="j-node"><button class="j-tog${/\S/.test(lead) ? " j-in" : ""}" aria-expanded="true" title="Collapse"></button>`],
+                    [top.o + 1, 2, '<span class="j-body">'],
+                    [i, 1, `</span><button class="j-more" title="Expand" data-n="${n}"></button>`],
+                    [i + 1, 0, "</span>"]);
+        }
+      }
+      tok(c, i); continue;
+    }
+    if(top){ if(c === ",") top.n++; else top.any = true; }
+    tok(c, i);
+  }
+  cuts.sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+  let out = "", at = 0;
+  for(const [pos, , html] of cuts){ out += highlight(code.slice(at, pos), "json") + html; at = pos; }
+  return out + highlight(code.slice(at), "json");
+}
+/* a −/+ toggle, or the summary of a folded node, opens or closes that node */
+function jsonToggle(e){
+  const b = e.target.closest && e.target.closest(".j-tog,.j-more"); if(!b) return;
+  const node = b.parentNode, shut = node.classList.toggle("j-shut"), tog = node.firstChild;
+  tog.setAttribute("aria-expanded", String(!shut));
+  tog.title = shut ? "Expand" : "Collapse";
 }
 
 /* ═══════════════════════════ code formatting ═══════════════════════════ */
@@ -1685,7 +1756,8 @@ function decorate(root){
   root.querySelectorAll("pre.code").forEach(pre => {
     const lang = pre.dataset.lang || "plain";
     const code = pre.textContent.replace(/\u200B/g, "");
-    pre.innerHTML = highlight(code, lang);
+    if(lang === "json"){ pre.innerHTML = jsonFold(code); pre.onclick = jsonToggle; }   // −/+ per object/array
+    else pre.innerHTML = highlight(code, lang);
     const wrap = document.createElement("div");
     wrap.className = "code-wrap collapsed";
     const bar = document.createElement("div");
